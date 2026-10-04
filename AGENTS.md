@@ -56,5 +56,11 @@ played save), `--json`.
   part module lists come from raw configs (no patch-added modules). Prefer running after a game
   launch; `info` shows `index_source`.
 - Module → mod mapping reads type names out of plugin DLLs. A name shared by two plugins is
-  attributed to both; a module counts as lost only when every provider is removed.
+  attributed to both; a module counts as lost only when every provider is removed. A DLL that only
+  *references* another mod's class (for compatibility) is also matched: e.g. xScienceContinued shows
+  up as providing `DMModuleScienceAnimateGeneric`. Treat a UI/utility mod listed as a candidate with
+  0 parts as `no_signal`.
+- `removal-impact` also lists auto-installed libraries CKAN would orphan. If one is still wanted
+  (e.g. TexturesUnlimited recolouring used by craft), keep it with
+  `kat ckan --allow-write mark user <mod>` before removing.
 - Vessel bodies are named for stock bodies; Kopernicus-added bodies show as `ref:N`.

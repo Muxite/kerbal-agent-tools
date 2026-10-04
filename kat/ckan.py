@@ -8,8 +8,8 @@ from dataclasses import dataclass
 
 from .instance import find_ckan_exe
 
-# CKAN prints download/remove progress as "12.3 MiB left - 40%" fragments on one line.
-_PROGRESS = re.compile(r"\s*[\d.]+ [KMG]?i?B left - \d+%\s*")
+# CKAN progress fragments, e.g. "12.3 MiB left - 40%" or "40.7 MiB/sec - 133.3 MiB (3 sec) left - 78%".
+_PROGRESS = re.compile(r"[ \t]*(?:[\d.]+ [KMG]?i?B/sec - )?[\d.]+ [KMG]?i?B(?: \(\d+ sec\))? left - \d+%[ \t]*\n?")
 
 # Subcommands that change the install or CKAN's config. Everything else is treated as read-only.
 MUTATING = {"install", "remove", "upgrade", "replace", "import", "update", "mark", "dedup"}
@@ -35,7 +35,7 @@ def run(args: list[str], timeout: int = 1800) -> CkanResult:
     if args and args[0] in {"install", "remove", "upgrade", "replace", "update", "import"} and "--headless" not in args:
         cmd.insert(2, "--headless")
     proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
-    out = _PROGRESS.sub(" ", proc.stdout + proc.stderr)
+    out = _PROGRESS.sub("", proc.stdout + proc.stderr)
     return CkanResult(cmd[1:], proc.returncode, out.strip())
 
 

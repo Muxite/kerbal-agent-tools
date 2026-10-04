@@ -41,3 +41,10 @@ def test_patch_node_names_and_stray_brace():
 def test_walk_visits_all():
     root = cfgnode.loads("A { B { C { } } }")
     assert [n.name for n in root.walk()] == ["", "A", "B", "C"]
+
+
+def test_ckan_progress_filter():
+    from kat.ckan import _PROGRESS
+    raw = ("Removing X...\n40.7 MiB/sec - 133.3 MiB (3 sec) left - 78%           \n"
+           "69.2 MiB left - 0%           68.4 MiB left - 1%           \nFinished removing X\n")
+    assert _PROGRESS.sub("", raw) == "Removing X...\nFinished removing X\n"
