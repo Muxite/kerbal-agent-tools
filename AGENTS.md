@@ -31,7 +31,10 @@ subcommand for machine-readable output: `python -m kat --json removal-impact KAS
 | `vessels [--all-saves] [--body X]` | Vessels in persistent/quicksave (or every .sfs). |
 | `mod-usage MOD...` | Crafts/vessels that use parts from these mods. |
 | `removal-impact MOD... [--all-saves]` | Dry run of `ckan remove`: removal set, parts lost, usage, modules lost, other mods' parts that lose modules, patches with `:NEEDS[...]` on it, verdict. |
-| `unused-mods` | Every mod classified: `candidates` / `required` / `in_use` / `no_signal`. |
+| `unused-mods` | Every mod classified: `candidates` / `required` / `behaviour` / `in_use` / `no_signal`. |
+| `part QUERY...` | Which mod a part is from, by in-game title or internal name (partial/fuzzy), plus where it's used. |
+| `phase-out [--max-effort N] [--mod M] [--out file.md] [--include-dependents]` | Mods that are *nearly* unused, ranked by effort (crafts to edit + 2 x live vessels), with the exact parts/crafts/vessels to change and an in-game Markdown checklist. |
+| `tag-parts [--install / --uninstall / --out F]` | MM patch: "[Mod: X]" at the start of every part description and the mod id in its VAB search tags. Writes only `GameData/zzz_kat_ModTags/`. |
 | `backup-save` | Zip + verify the save. |
 | `remove MOD... [--yes] [--force]` | Guarded `ckan remove`. Without `--yes` it only prints the plan. |
 | `ckan ARGS... [--allow-write]` | Passthrough to ckan.exe (headless). |
@@ -39,11 +42,25 @@ subcommand for machine-readable output: `python -m kat --json removal-impact KAS
 Global options: `--ksp-dir` (or `$KSP_DIR`), `--save` (or `$KAT_SAVE`; default = most recently
 played save), `--json`.
 
+## Phasing a mod out
+
+1. `kat phase-out` lists candidates; `kat phase-out --mod X` shows each part (in-game title) and the
+   crafts/vessels that use it; `--out` writes a checklist.
+2. The user swaps those parts in the VAB/SPH and recovers or replaces the live vessels. Debris is
+   listed but not counted: KSP deletes it on load once its parts are gone.
+3. Re-run `kat phase-out --mod X` until it's empty, then follow the removal rules above.
+
+Libraries whose removal would break other installed mods (SystemHeat, CryoTanks...) are hidden unless
+`--include-dependents`: they only go when everything built on them goes.
+
 ## Verdicts (`removal-impact`)
 
 - `SAFE`: nothing in crafts or saves uses what is removed.
-- `DEGRADES`: no parts vanish, but part modules do (used by crafts/vessels, or by other mods' parts).
-  Parts load without that behaviour (e.g. a wheel without its wheel module).
+- `DEGRADES`: no parts vanish, but used parts *of other mods* are defined with a module that goes away
+  (e.g. a KPBS corridor built on KAS). They load without that behaviour; check whether it matters
+  (TextureReplacer's `TRReflection` on Mk2Expansion cockpits is only window reflections).
+  Modules the removed mod's own patches added to other parts are listed under `module_usage` but
+  don't count: they disappear together with the patch.
 - `BREAKS_CRAFT`: stored craft files or non-live saves (quicksave etc.) use removed parts.
 - `BREAKS_VESSELS`: vessels in `persistent.sfs` use removed parts. KSP deletes those vessels on load.
 
@@ -51,10 +68,11 @@ played save), `--json`.
 
 - `no_signal` mods (visuals, UI, configs, libraries without part modules) can't be judged by usage.
   Decide on those from what they do, not from this tool.
-- Without `GameData/ModuleManager.ConfigCache` (it's deleted whenever the MM cache is cleared; KSP
-  regenerates it on the next launch), parts created by ModuleManager copy patches aren't indexed and
-  part module lists come from raw configs (no patch-added modules). Prefer running after a game
-  launch; `info` shows `index_source`.
+- With `GameData/ModuleManager.ConfigCache` present (after any KSP launch) the index uses the
+  post-patch part list; parts disabled or deleted by patches are excluded and copy-patch parts are
+  included. Without it (MM cache cleared), raw configs are used. `info` shows `index_source`.
+  Hard module dependencies always use each part's own cfg modules (`own_modules`), never patch-added ones.
+- Part titles, descriptions and tags are resolved from `en-us` localization.
 - Module → mod mapping reads type names out of plugin DLLs. A name shared by two plugins is
   attributed to both; a module counts as lost only when every provider is removed. A DLL that only
   *references* another mod's class (for compatibility) is also matched: e.g. xScienceContinued shows

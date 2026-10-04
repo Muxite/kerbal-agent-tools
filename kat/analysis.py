@@ -156,8 +156,11 @@ def removal_impact(ctx: Context, requested: list[str]) -> dict:
     }
 
     lost = modules_lost(ctx, removing)
+    # Hard: other mods' parts whose own definition needs a lost module (they stay, half-working).
     other_parts = sorted(p.name for p in ctx.idx.parts.values()
-                         if p.mod not in removing and lost & set(p.modules))
+                         if p.mod not in removing and lost & set(p.own_modules))
+    degraded_usage = _usage(ctx, set(other_parts))
+    # Soft: modules the removed mods' own patches added to other parts; they vanish with the patch.
     mod_usage_ = _module_usage(ctx, lost)
 
     live_hits = {k: v for k, v in usage["vessels"].items() if k in LIVE_SAVES}
@@ -165,7 +168,7 @@ def removal_impact(ctx: Context, requested: list[str]) -> dict:
         verdict = "BREAKS_VESSELS"
     elif usage["crafts"] or usage["vessels"]:
         verdict = "BREAKS_CRAFT"
-    elif mod_usage_["crafts"] or mod_usage_["vessels"] or other_parts:
+    elif degraded_usage["crafts"] or degraded_usage["vessels"]:
         verdict = "DEGRADES"
     else:
         verdict = "SAFE"
@@ -177,6 +180,7 @@ def removal_impact(ctx: Context, requested: list[str]) -> dict:
         "usage": usage,
         "modules_lost": sorted(lost),
         "other_mods_parts_losing_modules": other_parts,
+        "degraded_part_usage": degraded_usage,
         "module_usage": mod_usage_,
         "patches_referencing": patched_by,
         "index_source": ctx.idx.source,
@@ -201,9 +205,11 @@ def _notes(ctx: Context, removing: set[str]) -> list[str]:
 def unused_mods(ctx: Context) -> dict:
     """Classify every CKAN mod by whether the save actually uses what it provides.
 
-    in_use      parts or part modules appear in crafts/vessels
-    required    nothing used directly, but another mod depends on it (CKAN depends, or other
-                mods' parts use its part modules)
+    in_use      its parts are used, or used parts of other mods are defined with its modules
+    behaviour   only its patch-added modules show up in crafts/vessels (life support, recolouring,
+                gameplay systems): removing it drops that behaviour, nothing breaks; judge by what it does
+    required    nothing used, but another mod depends on it (CKAN depends, or other mods' parts
+                are defined with its modules)
     candidates  provides parts/modules, none used, nothing needs it -> removal candidates
     no_signal   no parts or modules (visuals, UI, configs): not judged
     """
@@ -221,24 +227,25 @@ def unused_mods(ctx: Context) -> dict:
     for p in ctx.idx.parts.values():
         parts_by_mod[p.mod].append(p.name)
 
-    out: dict[str, list] = {"in_use": [], "required": [], "candidates": [], "no_signal": []}
+    out: dict[str, list] = {"in_use": [], "behaviour": [], "required": [], "candidates": [], "no_signal": []}
     for mod in sorted(ctx.reg.modules):
         parts = parts_by_mod.get(mod, [])
         mods_provided = modules_provided(ctx, mod)
+        sole = {m for m in mods_provided if ctx.idx.module_owner[m] == [mod]}
+        needing = sorted(p.name for p in ctx.idx.parts.values() if p.mod != mod and sole & set(p.own_modules))
         row = {"mod": mod, "parts": len(parts), "parts_used": len(used_parts & set(parts)),
                "modules": len(mods_provided), "modules_used": sorted(used_modules & mods_provided),
+               "parts_of_other_mods_needing_it": needing,
+               "used_parts_of_other_mods_needing_it": sorted(used_parts & set(needing)),
                "auto_installed": ctx.reg.modules[mod].auto_installed,
                "dependents": sorted(ctx.reg.dependents(mod))}
         if not parts and not mods_provided:
             out["no_signal"].append(row)
-            continue
-        if row["parts_used"] or row["modules_used"]:
+        elif row["parts_used"] or row["used_parts_of_other_mods_needing_it"]:
             out["in_use"].append(row)
-            continue
-        sole = {m for m in mods_provided if ctx.idx.module_owner[m] == [mod]}
-        row["parts_of_other_mods_needing_it"] = sorted(
-            p.name for p in ctx.idx.parts.values() if p.mod != mod and sole & set(p.modules))
-        if row["dependents"] or row["parts_of_other_mods_needing_it"]:
+        elif row["modules_used"]:
+            out["behaviour"].append(row)
+        elif row["dependents"] or needing:
             out["required"].append(row)
         else:
             out["candidates"].append(row)

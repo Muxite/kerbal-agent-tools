@@ -48,6 +48,13 @@ class PartInfo:
     file: str
     title: str = ""
     modules: list[str] = field(default_factory=list)
+    raw_name: str = ""  # name as written in the cfg (may contain '_'); what MM patches must match
+    category: str = ""
+    description: str = ""
+    tags: str = ""
+    # Modules in the part's own cfg definition (before other mods' patches). Hard dependencies use
+    # these; `modules` may be post-patch when the index comes from ModuleManager.ConfigCache.
+    own_modules: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -112,7 +119,7 @@ def _signature(inst: Instance) -> dict:
         "registry": inst.registry_path.stat().st_mtime if inst.registry_path.exists() else 0,
         "configcache": cc.stat().st_mtime if cc.exists() else 0,
         "tops": tops,
-        "version": 3,
+        "version": 6,
     }
 
 
@@ -121,8 +128,34 @@ def _base_name(node_name: str) -> str:
     return re.split(r"[\[:]", node_name.lstrip("@+$-!%&|*"), maxsplit=1)[0].strip()
 
 
-def _scan_cfg_files(inst: Instance, reg: Registry, idx: GameDataIndex, want_parts: bool,
-                    module_names: set[str]) -> None:
+def _part_info(n: cfgnode.ConfigNode, owner: str, rel: str) -> PartInfo:
+    raw = n.get("name") or ""
+    return PartInfo(
+        name=normalize_part_name(raw), mod=owner, file=rel, title=n.get("title", ""),
+        modules=[m.get("name") for m in n.nodes_named("MODULE") if m.get("name")],
+        raw_name=raw, category=n.get("category", ""), description=n.get("description", ""),
+        tags=n.get("tags", ""),
+        own_modules=[m.get("name") for m in n.nodes_named("MODULE") if m.get("name")],
+    )
+
+
+def _collect_localization(root: cfgnode.ConfigNode, loc: dict[str, str], lang: str = "en-us") -> None:
+    for n in root.nodes:
+        if n.name == "Localization":
+            for table in n.nodes_named(lang):
+                for k, v in table.values:
+                    loc.setdefault(k, v)
+
+
+def localize(text: str, loc: dict[str, str]) -> str:
+    """Resolve a '#autoLOC_...'/'#LOC_...' key to English; KSP writes newlines as a literal '\\n'."""
+    if text.startswith("#"):
+        text = loc.get(text, text)
+    return text.replace("\\n", " ").strip()
+
+
+def _scan_cfg_files(inst: Instance, reg: Registry, idx: GameDataIndex, raw_parts: dict[str, PartInfo],
+                    module_names: set[str], loc: dict[str, str]) -> None:
     gd = inst.gamedata
     for dirpath, _dirs, files in os.walk(gd):
         for f in files:
@@ -138,9 +171,12 @@ def _scan_cfg_files(inst: Instance, reg: Registry, idx: GameDataIndex, want_part
             toks = _needs_tokens(text)
             if toks:
                 idx.needs[owner] = sorted(set(idx.needs.get(owner, [])) | toks)
-            if not ("RESOURCE_DEFINITION" in text or "MODULE" in text or (want_parts and _PART_LINE.search(text))):
+            if not ("RESOURCE_DEFINITION" in text or "MODULE" in text or "Localization" in text
+                    or _PART_LINE.search(text)):
                 continue
             root = cfgnode.loads(text)
+            if "Localization" in text:
+                _collect_localization(root, loc)
             for n in root.walk():
                 if _base_name(n.name) == "MODULE" and n.get("name"):
                     module_names.add(n.get("name"))
@@ -148,10 +184,9 @@ def _scan_cfg_files(inst: Instance, reg: Registry, idx: GameDataIndex, want_part
                 base = n.name.split(":")[0]
                 if base == "RESOURCE_DEFINITION" and n.get("name"):
                     idx.resources.setdefault(n.get("name"), owner)
-                elif want_parts and base == "PART" and n.get("name"):
-                    pn = normalize_part_name(n.get("name"))
-                    mods = [m.get("name") for m in n.nodes_named("MODULE") if m.get("name")]
-                    idx.parts.setdefault(pn, PartInfo(pn, owner, rel, n.get("title", ""), mods))
+                elif base == "PART" and n.get("name"):
+                    info = _part_info(n, owner, rel)
+                    raw_parts.setdefault(info.name, info)
 
 
 def _scan_configcache(inst: Instance, reg: Registry, idx: GameDataIndex, module_names: set[str]) -> None:
@@ -162,10 +197,9 @@ def _scan_configcache(inst: Instance, reg: Registry, idx: GameDataIndex, module_
         parent = (uc.get("parentUrl") or "").lstrip("/")
         for n in uc.nodes:
             if n.name == "PART" and n.get("name"):
-                pn = normalize_part_name(n.get("name"))
-                mods = [m.get("name") for m in n.nodes_named("MODULE") if m.get("name")]
-                module_names.update(mods)
-                idx.parts[pn] = PartInfo(pn, _owner(reg, parent), parent, n.get("title", ""), mods)
+                info = _part_info(n, _owner(reg, parent), parent)
+                module_names.update(info.modules)
+                idx.parts[info.name] = info
             elif n.name == "RESOURCE_DEFINITION" and n.get("name"):
                 idx.resources.setdefault(n.get("name"), _owner(reg, parent))
 
@@ -212,10 +246,21 @@ def build_index(inst: Instance, reg: Registry, rebuild: bool = False) -> GameDat
     use_cc = inst.configcache_path.exists()
     idx = GameDataIndex(source="configcache" if use_cc else "raw-scan")
     module_names: set[str] = set()
-    _scan_cfg_files(inst, reg, idx, want_parts=not use_cc, module_names=module_names)
+    loc: dict[str, str] = {}
+    raw_parts: dict[str, PartInfo] = {}
+    _scan_cfg_files(inst, reg, idx, raw_parts, module_names=module_names, loc=loc)
     if use_cc:
         _scan_configcache(inst, reg, idx, module_names)
+        for name, p in idx.parts.items():
+            if name in raw_parts:
+                p.own_modules = raw_parts[name].own_modules
+    else:
+        idx.parts = raw_parts
     _scan_dlls(inst, reg, idx, module_names)
+    for p in idx.parts.values():
+        p.title = localize(p.title, loc) or p.name
+        p.description = localize(p.description, loc)
+        p.tags = localize(p.tags, loc)
     for entry in os.scandir(inst.gamedata):
         if entry.is_dir():
             idx.folder_owner[entry.name] = _owner(reg, entry.name + "/")
