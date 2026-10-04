@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kerbal-agent-tools"
+version = "0.1.0"
+description = "Tools for agents to inspect and safely modify a modded Kerbal Space Program install via CKAN"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["click>=8", "rich>=13"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+kat = "kat.cli:run"
+
+[tool.setuptools]
+packages = ["kat"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
